@@ -238,12 +238,10 @@ loop(S = #state{}) ->
               Cards = lists:nth(2, Player),
               case length(Cards) == 0 of
                 true -> flow ! {win, lists:nth(1, Player)};
-                false -> do_nothing
+                false -> loop(S#state{players = UpdatedPlayers, pile = []})
               end;
-            error -> do_nothing
-          end,
-
-          loop(S#state{players = UpdatedPlayers, pile = []});
+            error -> loop(S#state{players = UpdatedPlayers, pile = []})
+          end;
         error ->
           ServerPid ! {MsgRef, notInTheGame},
           loop(S)

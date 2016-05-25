@@ -17,7 +17,8 @@ enter(PlayerName) ->
   server:enter(PlayerName, self()),
   receive
     {ok, Deck} ->
-      io:format("-->  You have entered the game!~nYour cards:~n~p~n", [Deck]);
+      io:format("-->  You have entered the game!~nYour cards:~n"),
+      printList(1, Deck, []);
     error_1 ->
       io:format("-->  You've alerady entered the game!~n");
     error_2 ->
@@ -93,7 +94,15 @@ cards() ->
   server:cards(self()),
   receive
     {cards, Cards} ->
-      io:format("Your cards:~n~p~n", [Cards]);
+      io:format("Your cards:~n"),
+      printList(1, Cards, []);
     notInTheGame ->
       io:format("-->  You are not in the game!~n")
   end.
+
+printList(_, [], _) -> ok;
+printList(Counter, List, Acc) ->
+  {H, T} = lists:split(1, List),
+  io:format("~p --> ~p~n", [Counter, H]),
+  NewAcc = [H, Acc],
+  printList(Counter + 1, T, NewAcc).
