@@ -10,7 +10,7 @@
 -author("Romeo").
 
 %% API
--export([enter/1, leave/0, ready/0, play/1, bluff/0, cards/0]).
+-export([enter/1, leave/0, ready/0, play/2, bluff/0, cards/0]).
 
 
 enter(PlayerName) ->
@@ -60,13 +60,14 @@ ready() ->
       io:format("-->  You are already ready!~n")
   end.
 
-play(Card) ->
-  server:play(self(), Card),
+play(Card, Rank) ->
+  server:play(self(), Card, Rank),
   receive
     ok ->
       io:format("");
     {endTurn, NewDeck} ->
-      io:format("You played!~nYour cards:~n~p~n", [NewDeck]);
+      io:format("You played!~nYour cards:~n"),
+      printList(1, NewDeck, []);
     error ->
       io:format("You are not in the game.~n");
     error_1 ->

@@ -10,7 +10,7 @@
 -author("Romeo").
 
 %% API
--export([start/1, init/1, enter/2, terminate/0, flow/0, leave/1, ready/1, play/2, bluff/1, cards/1]).
+-export([start/1, init/1, enter/2, terminate/0, flow/0, leave/1, ready/1, play/3, bluff/1, cards/1]).
 
 %% the server will need to keep two things in its state:
 %%    a list of subscribing players
@@ -43,17 +43,17 @@ flow() ->
     {leave, PlayerName, No_Players} ->
       io:format("-->  ~p has left the game! (~p players [Min: 2, Max: 10]).~n", [PlayerName, No_Players]),
       flow();
-    {play, PlayerName, Cards, NextPlayer} ->
-      io:format("~n==>  ~p is playing ~p ~p!~n==>  Next player: ~p~n", [PlayerName, lists:nth(1, Cards), lists:nth(2, Cards), NextPlayer]),
+    {play, PlayerName, Cards, Rank, NextPlayer} ->
+      io:format("~n==>  ~p is playing ~p ~p!~n==>  Next player: ~p~n", [PlayerName, length(Cards), Rank, NextPlayer]),
       flow();
     {bluff, DeclaringPlayer, Player} ->
       io:format("~n==>  ~p says that ~p is bluffing!~n", [DeclaringPlayer, Player]),
       flow();
     {isBluff, BlufferPlayer} ->
-      io:format("~n==>  He was right! ~p was bluffing! ~p takes all the cards.~nType game:cards(). to see your cards.~n", [BlufferPlayer, BlufferPlayer]),
+      io:format("~n==>  ~p was right! Last player was bluffing and takes all the cards.~n", [BlufferPlayer]),
       flow();
     {isNotBluff, DeclaringPlayer} ->
-      io:format("~n==>  Mmh, nope. ~p wasn't right! He wasn't bluffing! ~p takes all the cards.~nType game:cards(). to see your cards.~n", [DeclaringPlayer, DeclaringPlayer]),
+      io:format("~n==>  Last player wasn't bluffing! ~p takes all the cards.~n", [DeclaringPlayer]),
       flow();
     {win, Winner} ->
       io:format("~n==>  ~p has won!~n", [Winner])
@@ -169,46 +169,40 @@ loop(S = #state{}) ->
     {ServerPid, MsgRef, {bluff, PlayerPid}} ->
       case orddict:find(PlayerPid, S#state.players) of
         {ok, DeclaringPlayer} ->
-          CurrentTurn = lists:nth(1, lists:nth(1, S#state.turns)),
-          %% check if is player's turn
-          case PlayerPid == CurrentTurn of
-            true ->
-              LastTurn = lists:nth(2, S#state.turns),
-              LastCardsPlayer = lists:nth(1, lists:nth(2, LastTurn)),
-              RankDeclared = lists:nth(2, lists:nth(2, LastTurn)),
+          LastTurn = lists:last(S#state.turns),
+          LastCardsPlayer = lists:nth(1, lists:nth(2, LastTurn)),
+          RankDeclared = lists:nth(2, lists:nth(2, LastTurn)),
 
-              DictLastCardsPlayed = orddict:from_list(LastCardsPlayer),
+          case orddict:find(lists:nth(1, LastTurn), S#state.players) of
+            {ok, Player} -> flow ! {bluff, lists:nth(1, DeclaringPlayer), lists:nth(1, Player)}
+          end,
 
-              orddict:map(fun(_, V) ->
-                case V /= RankDeclared of
-                  true -> ServerPid ! {MsgRef, isBluff, lists:nth(1, LastTurn)},
-                    loop(S);
-                  false -> continue
-                end
-                          end, DictLastCardsPlayed),
+          DictLastCardsPlayed = orddict:from_list(LastCardsPlayer),
 
-              %% CHECK HERE
-              case orddict:find(lists:nth(1, LastTurn), S#state.players) of
-                {ok, Player} -> flow ! {bluff, lists:nth(1, DeclaringPlayer), lists:nth(1, Player)}
-              end,
+          orddict:map(fun(_, V) ->
+            case V /= RankDeclared of
+              true -> ServerPid ! {MsgRef, isBluff, lists:nth(1, LastTurn), PlayerPid},
+                loop(S);
+              false -> continue
+            end
+                      end, DictLastCardsPlayed),
 
-              ServerPid ! {MsgRef, isNotBluff, PlayerPid, lists:nth(1, LastTurn)},
 
-              loop(S);
-            false ->
-              ServerPid ! {MsgRef, error},
-              loop(S)
-          end;
+          ServerPid ! {MsgRef, isNotBluff, PlayerPid, lists:nth(1, LastTurn)},
+
+          loop(S);
         error ->
           ServerPid ! {MsgRef, notInTheGame},
           loop(S)
       end;
 
-    {ServerPid, MsgRef, {isBluff, BlufferPlayerPid}} ->
+    {ServerPid, MsgRef, {isBluff, BlufferPlayerPid, DeclaringPlayerPid}} ->
       case orddict:find(BlufferPlayerPid, S#state.players) of
         {ok, BlufferPlayer} ->
-          flow ! {isBluff, lists:nth(1, BlufferPlayer)},
-
+          case orddict:find(DeclaringPlayerPid, S#state.players) of
+            {ok, DeclaringPlayer} -> flow ! {isBluff, lists:nth(1, DeclaringPlayer)};
+            error -> continue
+          end,
 
           CurrentPile = S#state.pile,
           flow ! {enter, CurrentPile},
@@ -258,7 +252,7 @@ loop(S = #state{}) ->
           loop(S)
       end;
 
-    {ServerPid, MsgRef, {play, PlayerPid, Cards}} ->
+    {ServerPid, MsgRef, {play, PlayerPid, Cards, Rank}} ->
       %% check if player is in the game
       case orddict:find(PlayerPid, S#state.players) of
         {ok, Player} ->
@@ -269,7 +263,10 @@ loop(S = #state{}) ->
               CurrentDeck = lists:nth(2, Player),
               case lists:nth(1, Cards) =< length(CurrentDeck) of
                 true ->
-                  {CardsPlayed, OldCards} = lists:split(lists:nth(1, Cards), CurrentDeck),
+                  %% [3, 5, 7]
+                  CardsPlayed = lists:map(fun(V) -> lists:nth(V, CurrentDeck) end, Cards),
+                  OldCards = lists:subtract(CurrentDeck, CardsPlayed),
+
                   NewPile = case length(S#state.pile) /= 0 of
                               true -> lists:append(CardsPlayed, S#state.pile);
                               false -> CardsPlayed
@@ -278,11 +275,11 @@ loop(S = #state{}) ->
                   UpdatedPlayers = orddict:store(PlayerPid, [lists:nth(1, Player), OldCards], NewPlayers),
 
                   %% call nextTurn to rotate array
-                  NextTurn = nextTurn(S, CardsPlayed, lists:nth(2, Cards)),
-                  NextPlayerPid = lists:nth(1, lists:nth(1, S#state.turns)),
+                  NextTurn = nextTurn(S, CardsPlayed, Rank),
+                  NextPlayerPid = lists:nth(1, lists:nth(1, NextTurn)),
 
                   case orddict:find(NextPlayerPid, S#state.players) of
-                    {ok, Next} -> flow ! {play, lists:nth(1, Player), Cards, lists:nth(1, Next)},
+                    {ok, Next} -> flow ! {play, lists:nth(1, Player), Cards, Rank, lists:nth(1, Next)},
                       ServerPid ! {MsgRef, endTurn, OldCards}
                   end,
                   loop(S#state{players = UpdatedPlayers, pile = NewPile, turns = NextTurn});
@@ -358,9 +355,9 @@ ready(PlayerPid) ->
     {error, timeout}
   end.
 
-play(PlayerPid, Cards) ->
+play(PlayerPid, Cards, Rank) ->
   Ref = make_ref(),
-  ?MODULE ! {self(), Ref, {play, PlayerPid, Cards}},
+  ?MODULE ! {self(), Ref, {play, PlayerPid, Cards, Rank}},
   receive
     {Ref, ok} -> PlayerPid ! ok;
     {Ref, endTurn, NewDeck} -> PlayerPid ! {endTurn, NewDeck};
@@ -376,8 +373,8 @@ bluff(PlayerPid) ->
   Ref = make_ref(),
   ?MODULE ! {self(), Ref, {bluff, PlayerPid}},
   receive
-    {Ref, isBluff, BlufferPlayerPid} ->
-      ?MODULE ! {self(), Ref, {isBluff, BlufferPlayerPid}},
+    {Ref, isBluff, BlufferPlayerPid, DeclaringPlayerPid} ->
+      ?MODULE ! {self(), Ref, {isBluff, BlufferPlayerPid, DeclaringPlayerPid}},
       PlayerPid ! isBluff;
     {Ref, isNotBluff, DeclaringPlayerPid, BlufferPlayerPid} ->
       ?MODULE ! {self(), Ref, {isNotBluff, DeclaringPlayerPid, BlufferPlayerPid}},
@@ -436,8 +433,14 @@ ceiling(X) ->
 
 nextTurn(S, CardsPlayed, Rank) ->
   case length(CardsPlayed) == 0 of
-    true -> [[H, _], T] = S#state.turns,
-      [T, [H, [[], ""]]];
-    false -> [[H, _], T] = S#state.turns,
-      [T, [H, [CardsPlayed, Rank]]]
+    true ->
+      [[H, _], T] = S#state.turns,
+      [T, [H, []]];
+    false ->
+      {Head, Tail} = lists:split(1, S#state.turns),
+      %% Head = [[<0.60.0>, []]]
+      %% Tail: [[<0.53.0>,[]],[<0.46.0>,[]]]
+      H = lists:nth(1, lists:nth(1, Head)),
+      EndTail = [H, [CardsPlayed, Rank]],
+      lists:append(Tail, [EndTail])
   end.
